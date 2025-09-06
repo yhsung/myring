@@ -22,7 +22,7 @@ user-cross: $(BUILD_DIR)
 	aarch64-elf-gcc -static -O2 -Wall -o $(BUILD_DIR)/user-aarch64 user.c
 
 user: $(BUILD_DIR)
-	$(CC) -O2 -Wall -o $(BUILD_DIR)/user user.c
+	$(CC) -O2 -o $(BUILD_DIR)/user user.c
 
 $(BUILD_DIR):
 	mkdir -p $(BUILD_DIR)

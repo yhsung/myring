@@ -19,15 +19,33 @@
 #include <sys/stat.h>
 #include <sys/sysmacros.h>
 #include <inttypes.h>
+#include <time.h>
 
 #include "myring_uapi.h"
 
-/* Debug logging with file:line info */
-#define DEBUG_LOG(fmt, ...) \
-    printf("[%s:%d] " fmt, __FILE__, __LINE__, ##__VA_ARGS__)
+/* Get current timestamp as string */
+static void get_timestamp_str(char *buf, size_t buf_size) {
+  struct timespec ts;
+  struct tm *tm_info;
+  clock_gettime(CLOCK_REALTIME, &ts);
+  tm_info = localtime(&ts.tv_sec);
+  snprintf(buf, buf_size, "%02d:%02d:%02d.%03ld",
+           tm_info->tm_hour, tm_info->tm_min, tm_info->tm_sec,
+           ts.tv_nsec / 1000000);
+}
 
-#define ERROR_LOG(fmt, ...) \
-    fprintf(stderr, "[%s:%d] ERROR: " fmt, __FILE__, __LINE__, ##__VA_ARGS__)
+/* Debug logging with timestamp and file:line info */
+#define DEBUG_LOG(fmt, ...) do { \
+    char ts_buf[16]; \
+    get_timestamp_str(ts_buf, sizeof(ts_buf)); \
+    printf("[%s %s:%d] " fmt, ts_buf, __FILE__, __LINE__, ##__VA_ARGS__); \
+} while(0)
+
+#define ERROR_LOG(fmt, ...) do { \
+    char ts_buf[16]; \
+    get_timestamp_str(ts_buf, sizeof(ts_buf)); \
+    fprintf(stderr, "[%s %s:%d] ERROR: " fmt, ts_buf, __FILE__, __LINE__, ##__VA_ARGS__); \
+} while(0)
 
 #ifndef PAGE_SIZE
 #define PAGE_SIZE 4096
@@ -37,7 +55,7 @@
    total = PAGE_SIZE + (1ull << ring_order). We don't know ring_order here,
    so we'll probe via /proc or just map a generous upper bound. For demo,
    map  (PAGE_SIZE + 4MB) by default; adjust via env if needed. */
-#define DEFAULT_RING_SIZE   (1ull << 22) /* 4MB */
+#define DEFAULT_RING_SIZE   (1ull << 20) /* 1MB */
 #define DEFAULT_MAP_SIZE    (PAGE_SIZE + DEFAULT_RING_SIZE)
 
 static inline uint64_t load_acquire_u64(volatile uint64_t *p) {
@@ -145,6 +163,7 @@ int main(int argc, char **argv)
     ERROR_LOG("Check: dmesg | grep myring\n");
     return 1;
   }
+  DEBUG_LOG("ioctl works, ring_order=%u, rate_hz=%u\n", test_cfg.ring_order, test_cfg.rate_hz);
 
   /* mmap */
   void *map = mmap(NULL, DEFAULT_MAP_SIZE, PROT_READ | PROT_WRITE, MAP_SHARED, fd, 0);
@@ -154,7 +173,6 @@ int main(int argc, char **argv)
   uint8_t *data = (uint8_t*)map + PAGE_SIZE;
   uint64_t size = ctrl->size; /* provided by kernel */
 
-  DEBUG_LOG("ioctl works, ring_order=%u, rate_hz=%u\n", test_cfg.ring_order, test_cfg.rate_hz);
   DEBUG_LOG("mapped ctrl@%p data@%p size=%" PRIu64 " bytes\n", (void*)ctrl, (void*)data, size);
 
 
@@ -165,6 +183,9 @@ int main(int argc, char **argv)
   if (epoll_ctl(ep, EPOLL_CTL_ADD, efd, &ev) != 0) { perror("epoll_ctl"); return 1; }
 
   uint64_t total_packets = 0, total_drops = 0;
+  uint64_t total_bytes = 0;
+  struct timespec start_time, current_time;
+  clock_gettime(CLOCK_MONOTONIC, &start_time);
 
   for (;;) {
     struct epoll_event out;
@@ -209,9 +230,50 @@ int main(int argc, char **argv)
 
       if (rh->type == REC_TYPE_PKT) {
         total_packets++;
-        DEBUG_LOG("[pkt] ts=%" PRIu64 " len=%" PRIu32 "  head=%" PRIu64 " tail=%" PRIu64 "\n",
-               rh->ts_ns, rh->len, head, tail);
-        hexdump(payload, rh->len, 32);
+        total_bytes += rh->len;
+        
+        /* Detailed packet consumption diagnostics */
+        DEBUG_LOG("[CONSUME] Packet #%" PRIu64 ": ts=%" PRIu64 " len=%" PRIu32 "\n",
+               total_packets, rh->ts_ns, rh->len);
+        DEBUG_LOG("[CONSUME] Ring state: head=%" PRIu64 " tail=%" PRIu64 " used=%" PRIu64 "\n",
+               head, tail, head - tail);
+        DEBUG_LOG("[CONSUME] Record position: tail_offset=%" PRIu64 " record_len=%" PRIu64 "\n",
+               tail & (size - 1), reclen);
+        DEBUG_LOG("[CONSUME] Memory: ring_size=%" PRIu64 " wrap=%s\n",
+               size, (first < reclen) ? "YES" : "NO");
+        
+        /* Show first 16 bytes of payload for diagnostics */
+        if (rh->len >= 8) {
+          uint64_t *payload_u64 = (uint64_t*)payload;
+          DEBUG_LOG("[CONSUME] Payload first 8 bytes: 0x%016" PRIx64 "\n", *payload_u64);
+        }
+        
+        /* Show detailed hexdump for first few packets */
+        if (total_packets <= 5) {
+          DEBUG_LOG("[CONSUME] Full hexdump for packet #%" PRIu64 ":\n", total_packets);
+          hexdump(payload, rh->len, rh->len); /* Show full packet for first 5 */
+        } else {
+          hexdump(payload, rh->len, 32); /* Truncated for others */
+        }
+        
+        /* Print progress every 10 packets */
+        if (total_packets % 10 == 0) {
+          clock_gettime(CLOCK_MONOTONIC, &current_time);
+          double elapsed = (current_time.tv_sec - start_time.tv_sec) + 
+                          (current_time.tv_nsec - start_time.tv_nsec) / 1e9;
+          double rate_pps = elapsed > 0 ? total_packets / elapsed : 0;
+          double rate_bps = elapsed > 0 ? total_bytes / elapsed : 0;
+          
+          printf("\n=== PROGRESS ===\n");
+          printf("Packets: %" PRIu64 ", Bytes: %" PRIu64 " (%.2f KB, %.2f MB)\n", 
+                 total_packets, total_bytes, total_bytes / 1024.0, total_bytes / (1024.0 * 1024.0));
+          printf("Elapsed: %.2fs, Rate: %.1f pps, %.2f KB/s\n", 
+                 elapsed, rate_pps, rate_bps / 1024.0);
+          printf("Drops: %" PRIu64 "\n", total_drops);
+          printf("Ring utilization: %.1f%% (%" PRIu64 "/%" PRIu64 ")\n", 
+                 size > 0 ? (100.0 * (head - tail)) / size : 0.0, head - tail, size);
+          printf("================\n\n");
+        }
       } else if (rh->type == REC_TYPE_DROP) {
         struct myring_rec_drop *dr = (struct myring_rec_drop*)payload;
         total_drops += dr->lost;
@@ -225,23 +287,51 @@ int main(int argc, char **argv)
 
       /* advance tail */
       uint64_t new_tail = tail + reclen;
+      uint64_t old_tail = tail;
+      
+      DEBUG_LOG("[ADVANCE] Advancing tail: %" PRIu64 " -> %" PRIu64 " (delta=%" PRIu64 ")\n",
+             old_tail, new_tail, reclen);
+      
       struct myring_advance adv = { .new_tail = new_tail };
-      if (ioctl(fd, MYRING_IOC_ADVANCE_TAIL, &adv) != 0) { perror("ADVANCE_TAIL"); break; }
+      if (ioctl(fd, MYRING_IOC_ADVANCE_TAIL, &adv) != 0) { 
+        ERROR_LOG("ADVANCE_TAIL ioctl failed: %s (errno=%d)\n", strerror(errno), errno);
+        ERROR_LOG("Failed to advance tail from %" PRIu64 " to %" PRIu64 "\n", old_tail, new_tail);
+        perror("ADVANCE_TAIL"); 
+        break; 
+      }
+      
+      DEBUG_LOG("[ADVANCE] Tail successfully advanced, record consumed\n");
 
 
       /* optional: stop early demonstration */
-      if (total_packets >= 10) { 
+      if (total_packets >= 100) { 
         DEBUG_LOG("stopping after %"PRIu64" packets\n", total_packets);
         break;
       }
     }
     
     /* show final stats */
+    clock_gettime(CLOCK_MONOTONIC, &current_time);
+    double total_elapsed = (current_time.tv_sec - start_time.tv_sec) + 
+                          (current_time.tv_nsec - start_time.tv_nsec) / 1e9;
+    
     struct myring_stats stats;
     if (ioctl(fd, MYRING_IOC_GET_STATS, &stats) == 0) {
       DEBUG_LOG("\nFinal stats: head=%"PRIu64" tail=%"PRIu64" records=%"PRIu64" drops=%"PRIu64" bytes=%"PRIu64"\n",
              stats.head, stats.tail, stats.records, stats.drops, stats.bytes);
     }
+    
+    printf("\n=== FINAL SUMMARY ===\n");
+    printf("Total Runtime: %.2f seconds\n", total_elapsed);
+    printf("Packets Processed: %" PRIu64 "\n", total_packets);
+    printf("Bytes Processed: %" PRIu64 " (%.2f KB, %.2f MB)\n", 
+           total_bytes, total_bytes / 1024.0, total_bytes / (1024.0 * 1024.0));
+    if (total_elapsed > 0) {
+      printf("Average Rate: %.1f packets/sec, %.2f KB/sec\n", 
+             total_packets / total_elapsed, (total_bytes / 1024.0) / total_elapsed);
+    }
+    printf("Total Drops: %" PRIu64 "\n", total_drops);
+    printf("====================\n");
     break;
   }
   
