@@ -1,4 +1,7 @@
-# Kernel module build artifacts
+# Build directory (contains all artifacts)
+build/
+
+# Kernel module build artifacts (fallback cleanup)
 *.ko
 *.o
 *.mod
@@ -7,14 +10,10 @@
 *.symvers
 *.order
 .*.cmd
+.*.d
 .tmp_versions/
 modules.order
 Module.symvers
-
-# User application binaries
-user
-user-aarch64
-user-cross
 
 # Editor and IDE files
 .vscode/

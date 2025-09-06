@@ -55,22 +55,48 @@ static void hexdump(const void *buf, size_t len, size_t max)
 int main(int argc, char **argv)
 {
   const char *dev = "/dev/myring";
-  uint64_t map_len = DEFAULT_MAP_SIZE;
-  if (getenv("MYRING_MAP_LEN")) {
-    map_len = strtoull(getenv("MYRING_MAP_LEN"), NULL, 0);
-  }
 
+  printf("open device\n");
   int fd = open(dev, O_RDWR | O_NONBLOCK);
   if (fd < 0) { perror("open /dev/myring"); return 1; }
 
+  /* get current configuration */
+  printf("get configuration\n");
+  struct myring_config cfg;
+  if (ioctl(fd, MYRING_IOC_GET_CONFIG, &cfg) == 0) {
+    printf("ring_order=%u (ring_size=%" PRIu64 " bytes, %.1fMB)\n", 
+           cfg.ring_order, cfg.ring_size, cfg.ring_size / (1024.0 * 1024.0));
+    printf("rate_hz=%u Hz\n", cfg.rate_hz);
+  } else {
+    perror("GET_CONFIG");
+  }
+
   /* watermarks */
+  printf("set watermark\n");
   struct myring_watermarks wm = { .hi_pct = 50, .lo_pct = 30 };
   if (ioctl(fd, MYRING_IOC_SET_WM, &wm) != 0) { perror("IOCTL_SET_WM"); }
 
+  /* optionally change the rate */
+  if (argc > 1) {
+    uint32_t new_rate = (uint32_t)atoi(argv[1]);
+    if (new_rate > 0) {
+      printf("setting new rate to %u Hz\n", new_rate);
+      if (ioctl(fd, MYRING_IOC_SET_RATE, &new_rate) != 0) {
+        perror("SET_RATE");
+      } else {
+        printf("rate changed successfully\n");
+      }
+    }
+  }
+
   /* eventfd */
+  printf("create eventfd\n");
   int efd = eventfd(0, EFD_NONBLOCK | EFD_CLOEXEC);
   if (efd < 0) { perror("eventfd"); return 1; }
   if (ioctl(fd, MYRING_IOC_SET_EVENTFD, &efd) != 0) { perror("IOCTL_SET_EVENTFD"); }
+
+
+  #if 0
 
   /* mmap */
   void *map = mmap(NULL, map_len, PROT_READ | PROT_WRITE, MAP_SHARED, fd, 0);
@@ -79,8 +105,25 @@ int main(int argc, char **argv)
   struct myring_ctrl *ctrl = (struct myring_ctrl *)map;
   uint8_t *data = (uint8_t*)map + PAGE_SIZE;
   uint64_t size = ctrl->size; /* provided by kernel */
+  #endif
 
+  /* 1) map only the control page to discover ring size */
+  void *ctrl_map = mmap(NULL, PAGE_SIZE, PROT_READ|PROT_WRITE, MAP_SHARED, fd, 0);
+  if (ctrl_map == MAP_FAILED) { perror("mmap ctrl"); return 1; }
+  struct myring_ctrl *ctrl = (struct myring_ctrl *)ctrl_map;
+  uint64_t ring_size = ctrl->size;           /* set by kernel */
+  munmap(ctrl_map, PAGE_SIZE);
+
+  /* 2) map the whole region: PAGE_SIZE + ring_size */
+  uint64_t map_len = PAGE_SIZE + ring_size;
+  void *map = mmap(NULL, map_len, PROT_READ|PROT_WRITE, MAP_SHARED, fd, 0);
+  if (map == MAP_FAILED) { perror("mmap full"); return 1; }
+
+  ctrl = (struct myring_ctrl *)map;
+  uint8_t *data = (uint8_t*)map + PAGE_SIZE;
+  uint64_t size = ctrl->size;                /* == ring_size */
   printf("mapped ctrl@%p data@%p size=%" PRIu64 " bytes\n", (void*)ctrl, (void*)data, size);
+
 
   /* epoll on eventfd */
   int ep = epoll_create1(EPOLL_CLOEXEC);
@@ -88,7 +131,6 @@ int main(int argc, char **argv)
   struct epoll_event ev = { .events = EPOLLIN, .data.fd = efd };
   if (epoll_ctl(ep, EPOLL_CTL_ADD, efd, &ev) != 0) { perror("epoll_ctl"); return 1; }
 
-  uint64_t last_tail = 0;
   uint64_t total_packets = 0, total_drops = 0;
 
   for (;;) {
@@ -105,8 +147,8 @@ int main(int argc, char **argv)
 
     /* consume records until tail == head or we drop below lo% */
     for (;;) {
-      uint64_t head = load_acquire_u64(&ctrl->head);
-      uint64_t tail = load_acquire_u64(&ctrl->tail);
+      uint64_t head = load_acquire_u64((volatile uint64_t*)&ctrl->head);
+      uint64_t tail = load_acquire_u64((volatile uint64_t*)&ctrl->tail);
       if (tail == head) break;
 
       /* data region is a power-of-two ring */
@@ -134,16 +176,16 @@ int main(int argc, char **argv)
 
       if (rh->type == REC_TYPE_PKT) {
         total_packets++;
-        printf("[pkt] ts=%" PRIu64 " len=%u  head=%" PRIu64 " tail=%" PRIu64 "\n",
+        printf("[pkt] ts=%" PRIu64 " len=%" PRIu32 "  head=%" PRIu64 " tail=%" PRIu64 "\n",
                rh->ts_ns, rh->len, head, tail);
         hexdump(payload, rh->len, 32);
       } else if (rh->type == REC_TYPE_DROP) {
         struct myring_rec_drop *dr = (struct myring_rec_drop*)payload;
         total_drops += dr->lost;
-        printf("** DROP ** lost=%u  start=%" PRIu64 " end=%" PRIu64 "  (total lost=%" PRIu64 ")\n",
+        printf("** DROP ** lost=%" PRIu32 "  start=%" PRIu64 " end=%" PRIu64 "  (total lost=%" PRIu64 ")\n",
                dr->lost, dr->start_ns, dr->end_ns, total_drops);
       } else {
-        printf("[unknown type=0x%x] len=%u\n", rh->type, rh->len);
+        printf("[unknown type=0x%x] len=%" PRIu32 "\n", rh->type, rh->len);
       }
 
       free(tmp);
@@ -153,14 +195,23 @@ int main(int argc, char **argv)
       struct myring_advance adv = { .new_tail = new_tail };
       if (ioctl(fd, MYRING_IOC_ADVANCE_TAIL, &adv) != 0) { perror("ADVANCE_TAIL"); break; }
 
-      last_tail = new_tail;
 
       /* optional: stop early demonstration */
-      // if (total_packets >= 10) { printf("done\n"); goto out; }
+      if (total_packets >= 10) { 
+        printf("stopping after %"PRIu64" packets\n", total_packets);
+        break;
+      }
     }
+    
+    /* show final stats */
+    struct myring_stats stats;
+    if (ioctl(fd, MYRING_IOC_GET_STATS, &stats) == 0) {
+      printf("\nFinal stats: head=%"PRIu64" tail=%"PRIu64" records=%"PRIu64" drops=%"PRIu64" bytes=%"PRIu64"\n",
+             stats.head, stats.tail, stats.records, stats.drops, stats.bytes);
+    }
+    break;
   }
-
-out:
+  
   munmap(map, map_len);
   close(efd);
   close(fd);

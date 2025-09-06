@@ -2,8 +2,8 @@
 set -euo pipefail
 
 LAB="${HOME}/qemu-linux-lab"
-ISO="${LAB}/alpine-standard-3.22.1-aarch64.iso"
-DISK="${LAB}/alpine-aarch64.qcow2"
+ISO="${LAB}/debian-12.8.0-arm64-netinst.iso"
+DISK="${LAB}/debian-aarch64.qcow2"
 SHARE="${LAB}/hostshare"
 CODE="${LAB}/edk2-code.fd"
 VARS="${LAB}/edk2-vars.fd"

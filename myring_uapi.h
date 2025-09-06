@@ -5,6 +5,10 @@
 #include <linux/types.h>
 #else
 #include <stdint.h>
+/* Define kernel types for userspace */
+typedef uint32_t __u32;
+typedef uint16_t __u16;
+typedef uint64_t __u64;
 #endif
 
 /* IOCTLs */
@@ -14,6 +18,8 @@
 #define MYRING_IOC_GET_STATS      _IOR(MYRING_IOC_MAGIC, 3, struct myring_stats)
 #define MYRING_IOC_ADVANCE_TAIL   _IOW(MYRING_IOC_MAGIC, 4, struct myring_advance)
 #define MYRING_IOC_RESET           _IO(MYRING_IOC_MAGIC, 5)
+#define MYRING_IOC_GET_CONFIG     _IOR(MYRING_IOC_MAGIC, 6, struct myring_config)
+#define MYRING_IOC_SET_RATE       _IOW(MYRING_IOC_MAGIC, 7, __u32)
 
 /* Record types */
 #define REC_TYPE_PKT   1
@@ -39,6 +45,12 @@ struct myring_stats {
   __u64 bytes;
   __u64 last_hi_cross_ns;
   __u64 last_lo_cross_ns;
+};
+
+struct myring_config {
+  __u32 ring_order;    /* log2 of ring data size in bytes */
+  __u32 rate_hz;       /* synthetic producer rate in Hz */
+  __u64 ring_size;     /* actual ring size in bytes (1 << ring_order) */
 };
 
 /* control page, first PAGE_SIZE bytes of the mapping */

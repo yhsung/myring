@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: GPL-2.0
 // myring: miscdev + mmap SPSC ring + eventfd notify + watermarks + drop indicator
-// Alpine 3.22 / aarch64 friendly
+// Debian / aarch64 friendly
 //
 // Build: make
 // Load : insmod myring.ko [rate_hz=2000 ring_order=22]
@@ -8,6 +8,13 @@
 
 #include <linux/module.h>
 #include <linux/version.h>
+
+/* Kernel version compatibility */
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(6,3,0)
+#define COMPAT_VM_FLAGS_SET(vma, flags) vm_flags_set(vma, flags)
+#else
+#define COMPAT_VM_FLAGS_SET(vma, flags) do { (vma)->vm_flags |= (flags); } while(0)
+#endif
 #include <linux/miscdevice.h>
 #include <linux/fs.h>
 #include <linux/mm.h>
@@ -98,7 +105,7 @@ static inline uint32_t rb_pct(uint64_t used, uint64_t size)
 
 static void myring_signal(struct myring_dev *d)
 {
-  if (d->evt) eventfd_signal(d->evt);
+  if (d->evt) eventfd_signal(d->evt, 1);
   wake_up_interruptible(&d->wq);
 }
 
@@ -302,6 +309,23 @@ static long myring_ioctl(struct file *f, unsigned int cmd, unsigned long arg)
       d->ctrl->lost_in_drop = 0;
       break;
     }
+    case MYRING_IOC_GET_CONFIG: {
+      struct myring_config cfg = {
+        .ring_order = ring_order,
+        .rate_hz = rate_hz,
+        .ring_size = d->ctrl->size,
+      };
+      if (copy_to_user((void __user *)arg, &cfg, sizeof(cfg))) ret = -EFAULT;
+      break;
+    }
+    case MYRING_IOC_SET_RATE: {
+      uint32_t new_rate;
+      if (copy_from_user(&new_rate, (void __user *)arg, sizeof(new_rate))) { ret = -EFAULT; break; }
+      if (new_rate == 0 || new_rate > 100000) { ret = -EINVAL; break; }
+      rate_hz = new_rate;
+      /* The new rate will take effect on the next work scheduling cycle */
+      break;
+    }
     default:
       ret = -ENOTTY;
   }
@@ -326,7 +350,7 @@ static int myring_mmap(struct file *f, struct vm_area_struct *vma)
 
   if (len > d->vmem_len) return -EINVAL;
 
-  vm_flags_set(vma, VM_DONTEXPAND | VM_DONTDUMP);
+  COMPAT_VM_FLAGS_SET(vma, VM_DONTEXPAND | VM_DONTDUMP);
   return remap_vmalloc_range(vma, d->vmem, 0);
 }
 

@@ -10,16 +10,16 @@ and a **drop indicator** record when the buffer overflows.
 - Kbuild: `Makefile`
 - License: Dual (GPL-2.0 kernel module, MIT userspace)
 
-Tested on **Alpine Linux 3.22 (aarch64)** under **QEMU (Apple Silicon / HVF)**.
+Tested on **Debian (aarch64)** under **QEMU (Apple Silicon / HVF)**.
 
 ---
 
 ## Quick Start (Build & Run inside the guest)
 
 ```sh
-# In Alpine guest after installation
-apk update
-apk add --no-cache alpine-sdk build-base linux-virt-dev iperf3 netcat-openbsd
+# In Debian guest after installation
+apt update
+apt install -y build-essential linux-headers-$(uname -r) iperf3 netcat-openbsd
 
 # (optional) mount host share if you put the project there
 modprobe 9p 9pnet 9pnet_virtio || true
@@ -28,11 +28,11 @@ mount -t 9p -o trans=virtio,version=9p2000.L hostshare /mnt/hostshare
 
 # build kernel module
 make
-sudo insmod myring.ko
+sudo insmod build/myring.ko
 
 # build and run user app
-gcc -O2 -Wall -o user user.c
-./user
+make user
+./build/user
 ```
 
 The user app will wait on an `eventfd` and consume records from the ring. The kernel module
@@ -43,7 +43,7 @@ to a netfilter hook path to ingest real packets.
 
 ## Cross-compilation on macOS (Apple Silicon)
 
-You can cross-compile the user-space application on macOS for the Alpine Linux guest. The kernel module must be built inside the guest with the target kernel headers.
+You can cross-compile the user-space application on macOS for the Debian guest. The kernel module must be built inside the guest with the target kernel headers.
 
 ### Install aarch64 cross-compiler
 
@@ -63,7 +63,7 @@ aarch64-elf-gcc -static -O2 -Wall -o user-aarch64 user.c
 
 # Copy to host share (accessible from guest)
 mkdir -p ~/qemu-linux-lab/hostshare/myring
-cp user-aarch64 ~/qemu-linux-lab/hostshare/myring/
+cp build/user-aarch64 ~/qemu-linux-lab/hostshare/myring/
 
 # Alternative: use musl cross-compiler for better Linux compatibility
 # brew install filosottile/musl-cross/musl-cross
@@ -73,24 +73,24 @@ cp user-aarch64 ~/qemu-linux-lab/hostshare/myring/
 ### Build workflow
 
 1. **On macOS host**: Cross-compile user application
-2. **In Alpine guest**: Build kernel module with target headers
+2. **In Debian guest**: Build kernel module with target headers
 3. **Share via 9p**: Use the host share to transfer binaries
 
 ```sh
 # On macOS (in project directory)
-make user-cross         # creates user-aarch64 binary
-cp user-aarch64 ~/qemu-linux-lab/hostshare/myring/
+make user-cross         # creates build/user-aarch64 binary
+cp build/user-aarch64 ~/qemu-linux-lab/hostshare/myring/
 
-# In Alpine guest (after mounting hostshare)
+# In Debian guest (after mounting hostshare)
 cd /mnt/hostshare/myring
-make                    # builds kernel module
-sudo insmod myring.ko
+make                    # builds kernel module to build/myring.ko
+sudo insmod build/myring.ko
 ./user-aarch64         # run cross-compiled binary
 ```
 
 ---
 
-## QEMU on Apple Silicon: Install & Run Alpine 3.22.1 (aarch64)
+## QEMU on Apple Silicon: Install & Run Debian (aarch64)
 
 > These instructions assume macOS with Homebrew QEMU. We use **HVF** acceleration,
 > **UEFI pflash** (EDK2), **virtio** devices, **SCSI CD-ROM** with `bootindex`, and
@@ -107,12 +107,12 @@ mkdir -p ~/qemu-linux-lab/hostshare
 cd ~/qemu-linux-lab
 
 # disk image
-qemu-img create -f qcow2 alpine-aarch64.qcow2 20G
+qemu-img create -f qcow2 debian-aarch64.qcow2 20G
 
 # download ISO (place it here with exact name)
-#   alpine-standard-3.22.1-aarch64.iso
+#   debian-12.8.0-arm64-netinst.iso
 # verify:
-ls -lh alpine-standard-3.22.1-aarch64.iso
+ls -lh debian-12.8.0-arm64-netinst.iso
 
 # copy UEFI firmware blobs into the lab (code=RO, vars=RW)
 cp /opt/homebrew/share/qemu/edk2-aarch64-code.fd ./edk2-code.fd
@@ -130,8 +130,8 @@ Create `install-iso.sh` with the following content:
 set -euo pipefail
 
 LAB="${HOME}/qemu-linux-lab"
-ISO="${LAB}/alpine-standard-3.22.1-aarch64.iso"
-DISK="${LAB}/alpine-aarch64.qcow2"
+ISO="${LAB}/debian-12.8.0-arm64-netinst.iso"
+DISK="${LAB}/debian-aarch64.qcow2"
 SHARE="${LAB}/hostshare"
 CODE="${LAB}/edk2-code.fd"
 VARS="${LAB}/edk2-vars.fd"
@@ -155,26 +155,22 @@ chmod +x install-iso.sh
 ./install-iso.sh
 ```
 
-You should see the Alpine boot menu (`boot:`). **Press Enter** to boot the default
-kernel (or type `linux-virt` then Enter). You will land in a root shell.
+You should see the Debian boot menu. **Press Enter** to boot the default
+kernel. The installer will start automatically.
 
-Run the interactive installer:
+Follow the interactive installer:
 
-```sh
-setup-alpine
-```
-
-Suggested answers (you can adjust):
-- Keyboard: default (`us`)
-- Hostname: `alpine`
-- Network: interface `eth0` → DHCP (`no` for manual) → IPv6 `no` (or yes if you want)
-- root password: set one
-- Timezone: `Asia/Taipei` (or as desired)
-- NTP: `chrony`
-- SSH server: `openssh` (recommended)
-- Mirrors: pick a close mirror (e.g., dl-cdn.alpinelinux.org)
-- **Kernel**: choose **`linux-virt`** (optimized for VMs)
-- Disk: choose `vda`, mode `sys` (will wipe that disk)
+- Language: English
+- Country: Select your country
+- Keyboard: default
+- Hostname: `debian` (or preferred name)
+- Domain: (can leave empty)
+- Root password: set one
+- User account: create a regular user
+- Timezone: select appropriate timezone
+- Partitioning: Guided - use entire disk (will use `vda`)
+- Software selection: Standard system utilities (you can add SSH server)
+- GRUB bootloader: install to `/dev/vda`
 
 When it says “Installation is complete”, power off:
 ```sh
@@ -190,7 +186,7 @@ Create `run.sh`:
 set -euo pipefail
 
 LAB="${HOME}/qemu-linux-lab"
-DISK="${LAB}/alpine-aarch64.qcow2"
+DISK="${LAB}/debian-aarch64.qcow2"
 SHARE="${LAB}/hostshare"
 CODE="${LAB}/edk2-code.fd"
 VARS="${LAB}/edk2-vars.fd"
@@ -215,25 +211,28 @@ ssh -p 2222 root@127.0.0.1
 
 ---
 
-## After installing Alpine (inside the guest)
+## After installing Debian (inside the guest)
 
 ```sh
-apk update
-apk add --no-cache alpine-sdk build-base linux-virt-dev iperf3 netcat-openbsd
+apt update
+apt install -y build-essential linux-headers-$(uname -r) iperf3 netcat-openbsd
 
-# mount 9p share if needed
+# mount 9p share (one-time)
 modprobe 9p 9pnet 9pnet_virtio || true
 mkdir -p /mnt/hostshare
-mount -t 9p -o trans=virtio,version=9p2000.L hostshare /mnt/hostshare
+mount -t 9p -o trans=virtio,version=9p2000.L,rw,uid=$(id -u),gid=$(id -g),uname=$(whoami),access=client hostshare /mnt/hostshare
+
+# OR set up auto-mount at boot (recommended)
+# See "Auto-mount hostshare" section below
 
 # go to your project (if placed in the host share)
 cd /mnt/hostshare/myring
 
 make
-sudo insmod myring.ko
+sudo insmod build/myring.ko
 
-gcc -O2 -Wall -o user user.c
-./user
+make user
+./build/user
 ```
 
 Optional quick traffic (host → guest via UDP 5555):
@@ -254,14 +253,139 @@ PY
 
 ---
 
+## Auto-mount hostshare at boot
+
+To automatically mount the 9p hostshare every time the Debian guest boots:
+
+### Method 1: Using /etc/fstab (recommended)
+
+```bash
+# 1. Load 9p modules at boot
+echo '9p' | sudo tee -a /etc/modules
+echo '9pnet' | sudo tee -a /etc/modules
+echo '9pnet_virtio' | sudo tee -a /etc/modules
+
+# 2. Create mount point
+sudo mkdir -p /mnt/hostshare
+
+# 3. Add to fstab with proper permissions
+echo "hostshare /mnt/hostshare 9p trans=virtio,version=9p2000.L,rw,_netdev,uid=$(id -u),gid=$(id -g),uname=$(whoami),access=client 0 0" | sudo tee -a /etc/fstab
+
+# 4. Test the mount
+sudo mount -a
+ls /mnt/hostshare
+```
+
+### Method 2: Using systemd service (alternative)
+
+```bash
+# 1. Load modules (same as above)
+echo '9p' | sudo tee -a /etc/modules
+echo '9pnet' | sudo tee -a /etc/modules
+echo '9pnet_virtio' | sudo tee -a /etc/modules
+
+# 2. Create systemd service
+sudo tee /etc/systemd/system/mount-hostshare.service << 'EOF'
+[Unit]
+Description=Mount QEMU hostshare via 9p
+After=network.target
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStartPre=/bin/mkdir -p /mnt/hostshare
+ExecStart=/bin/bash -c 'mount -t 9p -o trans=virtio,version=9p2000.L,rw,uid=$(id -u),gid=$(id -g),uname=$(whoami),access=client hostshare /mnt/hostshare'
+ExecStop=/bin/umount /mnt/hostshare
+
+[Install]
+WantedBy=multi-user.target
+EOF
+
+# 3. Enable and start the service
+sudo systemctl enable mount-hostshare.service
+sudo systemctl start mount-hostshare.service
+
+# 4. Check status
+sudo systemctl status mount-hostshare.service
+ls /mnt/hostshare
+```
+
+### Verify auto-mount
+
+After setting up either method, reboot and check:
+
+```bash
+sudo reboot
+# After reboot:
+ls /mnt/hostshare
+mount | grep hostshare
+```
+
+---
+
 ## Troubleshooting
+
+### Network Issues in Debian Guest
+
+If you get "Network is unreachable" during or after Debian installation:
+
+**During Installation:**
+- Select "Configure network automatically" when prompted
+- If auto-config fails, use manual configuration:
+  - IP: `10.0.2.15`
+  - Netmask: `255.255.255.0`
+  - Gateway: `10.0.2.2`
+  - DNS: `8.8.8.8`
+
+**After Installation (if network still broken):**
+```bash
+# Check interface status
+ip a
+ip route
+
+# Fix manually (temporary)
+sudo ip link set enp0s1 up
+sudo ip addr add 10.0.2.15/24 dev enp0s1
+sudo ip route add default via 10.0.2.2
+echo "nameserver 8.8.8.8" | sudo tee /etc/resolv.conf
+
+# Test connectivity
+ping 8.8.8.8
+```
+
+**Permanent fix with NetworkManager:**
+```bash
+sudo systemctl enable NetworkManager
+sudo systemctl start NetworkManager
+sudo nmcli device connect enp0s1
+```
+
+### Hostshare Permission Issues
+
+If you can't modify files in `/mnt/hostshare`:
+
+**Quick fix (remount with correct permissions):**
+```bash
+sudo umount /mnt/hostshare
+mount -t 9p -o trans=virtio,version=9p2000.L,rw,uid=$(id -u),gid=$(id -g),uname=$(whoami),access=client hostshare /mnt/hostshare
+```
+
+**For persistent fix:** Update your fstab or systemd service with the permission options shown above.
+
+**Alternative: Use security_model=mapped-xattr in QEMU scripts:**
+Add to your QEMU command:
+```bash
+-virtfs local,path="${SHARE}",security_model=mapped-xattr,mount_tag=hostshare
+```
+
+### Other Issues
 
 - **UEFI shell / no boot from ISO**: Ensure ISO path is correct and exist; our script
   uses `scsi-cd` with `bootindex=1` so UEFI picks it. Try re-running `install-iso.sh`.
-- **“HVF does not support providing Virtualization extensions…”**: We **do not**
+- **"HVF does not support providing Virtualization extensions…"**: We **do not**
   set `virtualization=on`. Make sure `-machine virt,gic-version=3` (no `virtualization=on`).
 - **Install shows boot menu only**: Press **Enter** (default boot). You’ll get a root shell.
-  Then run `setup-alpine`.
+  Then run the Debian installer.
 - **Could not open ' '**: A path variable is empty. Double-check ISO and pflash file paths.
 - **`command not found: -cpu` in your script**: Missing trailing `\` on the previous line.
 - **HVF quirks**: If you suspect HVF issues, try software emulation:
