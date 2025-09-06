@@ -1,15 +1,7 @@
 #ifndef _MYRING_UAPI_H_
 #define _MYRING_UAPI_H_
 
-#ifdef __KERNEL__
 #include <linux/types.h>
-#else
-#include <stdint.h>
-/* Define kernel types for userspace */
-typedef uint32_t __u32;
-typedef uint16_t __u16;
-typedef uint64_t __u64;
-#endif
 
 /* IOCTLs */
 #define MYRING_IOC_MAGIC    'r'

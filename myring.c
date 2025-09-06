@@ -238,6 +238,7 @@ static void myring_prod_fn(struct work_struct *w)
 
 static int myring_open(struct inode *ino, struct file *f)
 {
+  printk(KERN_INFO "myring: device opened, vmem=%p, vmem_len=%zu\n", g.vmem, g.vmem_len);
   f->private_data = &g;
   return 0;
 }
@@ -313,7 +314,7 @@ static long myring_ioctl(struct file *f, unsigned int cmd, unsigned long arg)
       struct myring_config cfg = {
         .ring_order = ring_order,
         .rate_hz = rate_hz,
-        .ring_size = d->ctrl->size,
+        .ring_size = d->size,
       };
       if (copy_to_user((void __user *)arg, &cfg, sizeof(cfg))) ret = -EFAULT;
       break;
@@ -347,11 +348,31 @@ static int myring_mmap(struct file *f, struct vm_area_struct *vma)
 {
   struct myring_dev *d = f->private_data;
   size_t len = vma->vm_end - vma->vm_start;
+  int ret;
 
-  if (len > d->vmem_len) return -EINVAL;
+  printk(KERN_INFO "myring: mmap called - requested len=%zu, vmem_len=%zu, vmem=%p\n", 
+         len, d->vmem_len, d->vmem);
 
-  COMPAT_VM_FLAGS_SET(vma, VM_DONTEXPAND | VM_DONTDUMP);
-  return remap_vmalloc_range(vma, d->vmem, 0);
+  if (!d->vmem) {
+    printk(KERN_ERR "myring: mmap failed - vmem is NULL\n");
+    return -ENOMEM;
+  }
+
+  if (len > d->vmem_len) {
+    printk(KERN_ERR "myring: mmap failed - len %zu > vmem_len %zu\n", len, d->vmem_len);
+    return -EINVAL;
+  }
+
+  //printk(KERN_INFO "myring: setting VM flags\n");
+  //COMPAT_VM_FLAGS_SET(vma, VM_DONTEXPAND | VM_DONTDUMP);
+
+  
+  printk(KERN_INFO "myring: calling remap_vmalloc_range\n");
+  printk(KERN_INFO "myring: dump vma start %p\n", vma->vm_start);
+  ret = remap_vmalloc_range(vma, d->vmem, 0);
+  
+  printk(KERN_INFO "myring: mmap %s, ret=%d\n", ret == 0 ? "SUCCESS" : "FAILED", ret);
+  return ret;
 }
 
 static const struct file_operations myring_fops = {
@@ -374,20 +395,29 @@ static int __init myring_init(void)
   size_t data_sz = 1ull << ring_order;
   size_t total = PAGE_SIZE + data_sz;
 
+  printk(KERN_INFO "myring: initializing module, ring_order=%u, data_sz=%zu, total=%zu\n", 
+         ring_order, data_sz, total);
+
   memset(&g, 0, sizeof(g));
   init_waitqueue_head(&g.wq);
   mutex_init(&g.ioctl_mu);
 
   g.vmem = vzalloc(total);
-  if (!g.vmem) return -ENOMEM;
+  if (!g.vmem) {
+    printk(KERN_ERR "myring: vzalloc(%zu) failed\n", total);
+    return -ENOMEM;
+  }
+  printk(KERN_INFO "myring: vzalloc succeeded, vmem=%p\n", g.vmem);
   g.vmem_len = total;
   g.ctrl = (struct myring_ctrl *)g.vmem;
   g.data = g.vmem + PAGE_SIZE;
   g.size = data_sz;
+  printk(KERN_INFO "myring: g.vmem_len=%zu, g.size=%zu, data_sz=%zu\n", g.vmem_len, g.size, data_sz);
 
   g.ctrl->head = 0;
   g.ctrl->tail = 0;
-  g.ctrl->size = data_sz;
+  g.ctrl->size = PAGE_SIZE;
+  printk(KERN_INFO "myring: initialized ctrl->size=%llu\n", g.ctrl->size);
   g.ctrl->hi_pct = 50;
   g.ctrl->lo_pct = 30;
   g.ctrl->flags = 0;
@@ -397,11 +427,14 @@ static int __init myring_init(void)
   g.misc.fops = &myring_fops;
   g.misc.mode = 0666;
 
+  printk(KERN_INFO "myring: registering misc device, name=%s\n", g.misc.name);
   ret = misc_register(&g.misc);
   if (ret) {
+    printk(KERN_ERR "myring: misc_register failed, ret=%d\n", ret);
     vfree(g.vmem);
     return ret;
   }
+  printk(KERN_INFO "myring: misc device registered successfully\n");
 
   /* start synthetic producer */
   INIT_DELAYED_WORK(&g.prod_work, myring_prod_fn);

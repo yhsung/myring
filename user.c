@@ -16,9 +16,18 @@
 #include <sys/ioctl.h>
 #include <sys/mman.h>
 #include <sys/eventfd.h>
+#include <sys/stat.h>
+#include <sys/sysmacros.h>
 #include <inttypes.h>
 
 #include "myring_uapi.h"
+
+/* Debug logging with file:line info */
+#define DEBUG_LOG(fmt, ...) \
+    printf("[%s:%d] " fmt, __FILE__, __LINE__, ##__VA_ARGS__)
+
+#define ERROR_LOG(fmt, ...) \
+    fprintf(stderr, "[%s:%d] ERROR: " fmt, __FILE__, __LINE__, ##__VA_ARGS__)
 
 #ifndef PAGE_SIZE
 #define PAGE_SIZE 4096
@@ -40,6 +49,14 @@ static inline void store_release_u64(volatile uint64_t *p, uint64_t v) {
   __sync_synchronize();
 }
 
+/* Safe load for potentially unaligned packed struct members */
+static inline uint64_t load_acquire_u64_packed(const volatile void *p) {
+  __sync_synchronize();
+  uint64_t val;
+  memcpy(&val, (const void*)p, sizeof(val));
+  return val;
+}
+
 static void hexdump(const void *buf, size_t len, size_t max)
 {
   const unsigned char *p = (const unsigned char*)buf;
@@ -56,23 +73,45 @@ int main(int argc, char **argv)
 {
   const char *dev = "/dev/myring";
 
-  printf("open device\n");
+  DEBUG_LOG("open device %s\n", dev);
+  
+  /* Check if device exists first */
+  struct stat st;
+  if (stat(dev, &st) != 0) {
+    ERROR_LOG("Device %s does not exist: %s\n", dev, strerror(errno));
+    ERROR_LOG("1) Load module: sudo insmod build/myring.ko\n");
+    ERROR_LOG("2) Check dmesg for major number\n");
+    ERROR_LOG("3) Create device: sudo mknod %s c <major> 0\n", dev);
+    ERROR_LOG("4) Set permissions: sudo chmod 666 %s\n", dev);
+    return 1;
+  }
+  
+  DEBUG_LOG("device exists, checking properties...\n");
+  DEBUG_LOG("Device major:minor = %d:%d, mode = 0%o\n", 
+         (int)major(st.st_rdev), (int)minor(st.st_rdev), st.st_mode & 0777);
+  
+  DEBUG_LOG("attempting to open...\n");
   int fd = open(dev, O_RDWR | O_NONBLOCK);
-  if (fd < 0) { perror("open /dev/myring"); return 1; }
+  if (fd < 0) { 
+    ERROR_LOG("open %s failed: %s (errno=%d)\n", dev, strerror(errno), errno);
+    ERROR_LOG("Check device permissions: ls -la %s\n", dev);
+    return 1; 
+  }
+  DEBUG_LOG("device opened successfully (fd=%d)\n", fd);
 
   /* get current configuration */
-  printf("get configuration\n");
+  DEBUG_LOG("get configuration\n");
   struct myring_config cfg;
   if (ioctl(fd, MYRING_IOC_GET_CONFIG, &cfg) == 0) {
-    printf("ring_order=%u (ring_size=%" PRIu64 " bytes, %.1fMB)\n", 
+    DEBUG_LOG("ring_order=%u (ring_size=%" PRIu64 " bytes, %.1fMB)\n", 
            cfg.ring_order, cfg.ring_size, cfg.ring_size / (1024.0 * 1024.0));
-    printf("rate_hz=%u Hz\n", cfg.rate_hz);
+    DEBUG_LOG("rate_hz=%u Hz\n", cfg.rate_hz);
   } else {
     perror("GET_CONFIG");
   }
 
   /* watermarks */
-  printf("set watermark\n");
+  DEBUG_LOG("set watermark\n");
   struct myring_watermarks wm = { .hi_pct = 50, .lo_pct = 30 };
   if (ioctl(fd, MYRING_IOC_SET_WM, &wm) != 0) { perror("IOCTL_SET_WM"); }
 
@@ -80,49 +119,43 @@ int main(int argc, char **argv)
   if (argc > 1) {
     uint32_t new_rate = (uint32_t)atoi(argv[1]);
     if (new_rate > 0) {
-      printf("setting new rate to %u Hz\n", new_rate);
+      DEBUG_LOG("setting new rate to %u Hz\n", new_rate);
       if (ioctl(fd, MYRING_IOC_SET_RATE, &new_rate) != 0) {
         perror("SET_RATE");
       } else {
-        printf("rate changed successfully\n");
+        DEBUG_LOG("rate changed successfully\n");
       }
     }
   }
 
   /* eventfd */
-  printf("create eventfd\n");
+  DEBUG_LOG("create eventfd\n");
   int efd = eventfd(0, EFD_NONBLOCK | EFD_CLOEXEC);
   if (efd < 0) { perror("eventfd"); return 1; }
   if (ioctl(fd, MYRING_IOC_SET_EVENTFD, &efd) != 0) { perror("IOCTL_SET_EVENTFD"); }
 
 
-  #if 0
+  /* Try a simple ioctl first to see if the device is working */
+  DEBUG_LOG("testing device with GET_CONFIG ioctl...\n");
+  struct myring_config test_cfg;
+  int ioctl_ret = ioctl(fd, MYRING_IOC_GET_CONFIG, &test_cfg);
+  if (ioctl_ret != 0) {
+    ERROR_LOG("GET_CONFIG ioctl failed: %s (errno=%d)\n", strerror(errno), errno);
+    ERROR_LOG("This suggests the kernel module is not properly loaded or compatible\n");
+    ERROR_LOG("Check: dmesg | grep myring\n");
+    return 1;
+  }
 
   /* mmap */
-  void *map = mmap(NULL, map_len, PROT_READ | PROT_WRITE, MAP_SHARED, fd, 0);
+  void *map = mmap(NULL, DEFAULT_MAP_SIZE, PROT_READ | PROT_WRITE, MAP_SHARED, fd, 0);
   if (map == MAP_FAILED) { perror("mmap"); return 1; }
 
   struct myring_ctrl *ctrl = (struct myring_ctrl *)map;
   uint8_t *data = (uint8_t*)map + PAGE_SIZE;
   uint64_t size = ctrl->size; /* provided by kernel */
-  #endif
 
-  /* 1) map only the control page to discover ring size */
-  void *ctrl_map = mmap(NULL, PAGE_SIZE, PROT_READ|PROT_WRITE, MAP_SHARED, fd, 0);
-  if (ctrl_map == MAP_FAILED) { perror("mmap ctrl"); return 1; }
-  struct myring_ctrl *ctrl = (struct myring_ctrl *)ctrl_map;
-  uint64_t ring_size = ctrl->size;           /* set by kernel */
-  munmap(ctrl_map, PAGE_SIZE);
-
-  /* 2) map the whole region: PAGE_SIZE + ring_size */
-  uint64_t map_len = PAGE_SIZE + ring_size;
-  void *map = mmap(NULL, map_len, PROT_READ|PROT_WRITE, MAP_SHARED, fd, 0);
-  if (map == MAP_FAILED) { perror("mmap full"); return 1; }
-
-  ctrl = (struct myring_ctrl *)map;
-  uint8_t *data = (uint8_t*)map + PAGE_SIZE;
-  uint64_t size = ctrl->size;                /* == ring_size */
-  printf("mapped ctrl@%p data@%p size=%" PRIu64 " bytes\n", (void*)ctrl, (void*)data, size);
+  DEBUG_LOG("ioctl works, ring_order=%u, rate_hz=%u\n", test_cfg.ring_order, test_cfg.rate_hz);
+  DEBUG_LOG("mapped ctrl@%p data@%p size=%" PRIu64 " bytes\n", (void*)ctrl, (void*)data, size);
 
 
   /* epoll on eventfd */
@@ -147,8 +180,8 @@ int main(int argc, char **argv)
 
     /* consume records until tail == head or we drop below lo% */
     for (;;) {
-      uint64_t head = load_acquire_u64((volatile uint64_t*)&ctrl->head);
-      uint64_t tail = load_acquire_u64((volatile uint64_t*)&ctrl->tail);
+      uint64_t head = load_acquire_u64_packed(&ctrl->head);
+      uint64_t tail = load_acquire_u64_packed(&ctrl->tail);
       if (tail == head) break;
 
       /* data region is a power-of-two ring */
@@ -176,16 +209,16 @@ int main(int argc, char **argv)
 
       if (rh->type == REC_TYPE_PKT) {
         total_packets++;
-        printf("[pkt] ts=%" PRIu64 " len=%" PRIu32 "  head=%" PRIu64 " tail=%" PRIu64 "\n",
+        DEBUG_LOG("[pkt] ts=%" PRIu64 " len=%" PRIu32 "  head=%" PRIu64 " tail=%" PRIu64 "\n",
                rh->ts_ns, rh->len, head, tail);
         hexdump(payload, rh->len, 32);
       } else if (rh->type == REC_TYPE_DROP) {
         struct myring_rec_drop *dr = (struct myring_rec_drop*)payload;
         total_drops += dr->lost;
-        printf("** DROP ** lost=%" PRIu32 "  start=%" PRIu64 " end=%" PRIu64 "  (total lost=%" PRIu64 ")\n",
+        DEBUG_LOG("** DROP ** lost=%" PRIu32 "  start=%" PRIu64 " end=%" PRIu64 "  (total lost=%" PRIu64 ")\n",
                dr->lost, dr->start_ns, dr->end_ns, total_drops);
       } else {
-        printf("[unknown type=0x%x] len=%" PRIu32 "\n", rh->type, rh->len);
+        DEBUG_LOG("[unknown type=0x%x] len=%" PRIu32 "\n", rh->type, rh->len);
       }
 
       free(tmp);
@@ -198,7 +231,7 @@ int main(int argc, char **argv)
 
       /* optional: stop early demonstration */
       if (total_packets >= 10) { 
-        printf("stopping after %"PRIu64" packets\n", total_packets);
+        DEBUG_LOG("stopping after %"PRIu64" packets\n", total_packets);
         break;
       }
     }
@@ -206,13 +239,13 @@ int main(int argc, char **argv)
     /* show final stats */
     struct myring_stats stats;
     if (ioctl(fd, MYRING_IOC_GET_STATS, &stats) == 0) {
-      printf("\nFinal stats: head=%"PRIu64" tail=%"PRIu64" records=%"PRIu64" drops=%"PRIu64" bytes=%"PRIu64"\n",
+      DEBUG_LOG("\nFinal stats: head=%"PRIu64" tail=%"PRIu64" records=%"PRIu64" drops=%"PRIu64" bytes=%"PRIu64"\n",
              stats.head, stats.tail, stats.records, stats.drops, stats.bytes);
     }
     break;
   }
   
-  munmap(map, map_len);
+  munmap(map, DEFAULT_MAP_SIZE);
   close(efd);
   close(fd);
   return 0;
