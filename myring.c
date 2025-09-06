@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: MIT
+// SPDX-License-Identifier: GPL-2.0
 // myring: miscdev + mmap SPSC ring + eventfd notify + watermarks + drop indicator
 // Alpine 3.22 / aarch64 friendly
 //
@@ -98,7 +98,7 @@ static inline uint32_t rb_pct(uint64_t used, uint64_t size)
 
 static void myring_signal(struct myring_dev *d)
 {
-  if (d->evt) eventfd_signal(d->evt, 1);
+  if (d->evt) eventfd_signal(d->evt);
   wake_up_interruptible(&d->wq);
 }
 
@@ -326,7 +326,7 @@ static int myring_mmap(struct file *f, struct vm_area_struct *vma)
 
   if (len > d->vmem_len) return -EINVAL;
 
-  vma->vm_flags |= VM_DONTEXPAND | VM_DONTDUMP;
+  vm_flags_set(vma, VM_DONTEXPAND | VM_DONTDUMP);
   return remap_vmalloc_range(vma, d->vmem, 0);
 }
 
@@ -402,7 +402,7 @@ static void __exit myring_exit(void)
   pr_info(DRV_NAME ": unloaded\n");
 }
 
-MODULE_LICENSE("MIT");
+MODULE_LICENSE("GPL");
 MODULE_AUTHOR("ChatGPT");
 MODULE_DESCRIPTION("SPSC ring + eventfd + mmap + watermarks + drop indicator");
 module_init(myring_init);

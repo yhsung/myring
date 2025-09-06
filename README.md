@@ -8,7 +8,7 @@ and a **drop indicator** record when the buffer overflows.
 - UAPI header: `myring_uapi.h`
 - User app: `user.c` (epoll + eventfd + mmap consumer)
 - Kbuild: `Makefile`
-- License: MIT
+- License: Dual (GPL-2.0 kernel module, MIT userspace)
 
 Tested on **Alpine Linux 3.22 (aarch64)** under **QEMU (Apple Silicon / HVF)**.
 
@@ -38,6 +38,55 @@ gcc -O2 -Wall -o user user.c
 The user app will wait on an `eventfd` and consume records from the ring. The kernel module
 includes a **synthetic producer** (default ~2 kHz of ~256B records). You can later switch
 to a netfilter hook path to ingest real packets.
+
+---
+
+## Cross-compilation on macOS (Apple Silicon)
+
+You can cross-compile the user-space application on macOS for the Alpine Linux guest. The kernel module must be built inside the guest with the target kernel headers.
+
+### Install aarch64 cross-compiler
+
+```sh
+# Install via Homebrew
+brew install aarch64-elf-gcc
+
+# Or use a full Linux toolchain (alternative)
+brew install x86_64-elf-gcc  # if you need x86_64 later
+```
+
+### Cross-compile user application
+
+```sh
+# Build user app for aarch64-linux (static linking recommended)
+aarch64-elf-gcc -static -O2 -Wall -o user-aarch64 user.c
+
+# Copy to host share (accessible from guest)
+mkdir -p ~/qemu-linux-lab/hostshare/myring
+cp user-aarch64 ~/qemu-linux-lab/hostshare/myring/
+
+# Alternative: use musl cross-compiler for better Linux compatibility
+# brew install filosottile/musl-cross/musl-cross
+# musl-cross-aarch64-linux-gnu-gcc -static -O2 -Wall -o user user.c
+```
+
+### Build workflow
+
+1. **On macOS host**: Cross-compile user application
+2. **In Alpine guest**: Build kernel module with target headers
+3. **Share via 9p**: Use the host share to transfer binaries
+
+```sh
+# On macOS (in project directory)
+make user-cross         # creates user-aarch64 binary
+cp user-aarch64 ~/qemu-linux-lab/hostshare/myring/
+
+# In Alpine guest (after mounting hostshare)
+cd /mnt/hostshare/myring
+make                    # builds kernel module
+sudo insmod myring.ko
+./user-aarch64         # run cross-compiled binary
+```
 
 ---
 
@@ -236,4 +285,9 @@ myring/
 ```
 
 ## License
-MIT
+
+**Dual License:**
+- **Kernel module** (`myring.c`): GPL-2.0 (required for GPL-only kernel symbols)
+- **Userspace components** (`user.c`, `myring_uapi.h`, scripts): MIT
+
+See `LICENSE` file for full terms.
