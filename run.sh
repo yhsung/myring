@@ -12,7 +12,7 @@ VARS="${LAB}/edk2-vars.fd"
 [[ -f "${VARS}" ]] || { echo "UEFI vars not found: ${VARS}"; exit 1; }
 
 exec qemu-system-aarch64   -accel hvf   -machine virt,gic-version=3 \
-    -cpu cortex-a72   -smp 4 -m 4096 \
+    -cpu cortex-a72   -smp 8 -m 12288 \
     -drive if=pflash,format=raw,readonly=on,file="${CODE}" \
     -drive if=pflash,format=raw,file="${VARS}" \
     -drive if=none,file="${DISK}",format=qcow2,id=hd0 \

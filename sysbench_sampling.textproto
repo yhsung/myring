@@ -1,0 +1,49 @@
+# 錄10秒，可依需求改
+duration_ms: 30000
+
+# 放大 buffer 以免丟樣
+buffers { size_kb: 40960 fill_policy: DISCARD }
+
+# (A) Callstack sampling：以 SW_CPU_CLOCK 為 timebase，每CPU 100Hz
+data_sources {
+  config {
+    name: "linux.perf"
+    perf_event_config {
+      timebase {
+        counter: SW_CPU_CLOCK
+        frequency: 100
+        timestamp_clock: PERF_CLOCK_MONOTONIC
+      }
+      # 開堆疊取樣，只對命令列包含 "sysbench" 的程序進行（降低解棧負擔）
+      callstack_sampling {
+        scope { target_cmdline: "sysbench" }
+        kernel_frames: true        # 也收核心堆疊（需 kptr_restrict=0 才能顯名）
+      }
+    }
+  }
+}
+
+# (B) ftrace：仍保留排程與 block/* I/O（你之前需要的）
+data_sources {
+  config {
+    name: "linux.ftrace"
+    ftrace_config {
+      ftrace_events: "sched/sched_switch"
+      ftrace_events: "sched/sched_waking"
+      ftrace_events: "block/block_rq_issue"
+      ftrace_events: "block/block_rq_complete"
+      ftrace_events: "block/block_bio_queue"
+      ftrace_events: "power/cpu_frequency"
+      ftrace_events: "power/cpu_idle"
+    }
+  }
+}
+
+# (C) 行程/執行緒命名
+data_sources {
+  config {
+    name: "linux.process_stats"
+    process_stats_config { scan_all_processes_on_start: true }
+  }
+}
+
