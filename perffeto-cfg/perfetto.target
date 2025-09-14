@@ -1,0 +1,7 @@
+[Unit]
+Description=Perfetto tracing stack
+After=local-fs.target network.target
+Wants=perfetto-traced.service perfetto-traced-probes.service perfetto-websocket-bridge.service
+
+[Install]
+WantedBy=multi-user.target

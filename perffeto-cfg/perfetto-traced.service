@@ -1,0 +1,22 @@
+[Unit]
+Description=Perfetto traced
+After=local-fs.target network.target
+RequiresMountsFor=/mnt/hostshare
+PartOf=perfetto.target
+
+[Service]
+Type=simple
+EnvironmentFile=/etc/perfetto/perfetto.env
+ExecStart=/usr/bin/env bash -lc '"$BIN_DIR/tracebox" traced $TRACED_OPTS'
+Restart=always
+RestartSec=1
+# Prefer graceful stop; systemd sends SIGTERM then SIGKILL (TimeoutStopSec default 90s)
+KillSignal=SIGTERM
+User=root
+# If you want all children killed on stop/restart:
+KillMode=control-group
+# Optional: raise fd limit if you do heavy tracing
+# LimitNOFILE=1048576
+
+[Install]
+WantedBy=perfetto.target

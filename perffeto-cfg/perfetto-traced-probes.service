@@ -1,0 +1,19 @@
+[Unit]
+Description=Perfetto traced_probes
+After=perfetto-traced.service
+Requires=perfetto-traced.service
+RequiresMountsFor=/mnt/hostshare
+PartOf=perfetto.target
+
+[Service]
+Type=simple
+EnvironmentFile=/etc/perfetto/perfetto.env
+ExecStart=/usr/bin/env bash -lc '"$BIN_DIR/tracebox" traced_probes $TRACED_PROBES_OPTS'
+Restart=always
+RestartSec=1
+KillSignal=SIGTERM
+User=root
+KillMode=control-group
+
+[Install]
+WantedBy=perfetto.target

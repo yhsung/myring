@@ -1,0 +1,19 @@
+[Unit]
+Description=Perfetto websocket_bridge
+After=network.target perfetto-traced.service perfetto-traced-probes.service
+Requires=perfetto-traced.service perfetto-traced-probes.service
+RequiresMountsFor=/mnt/hostshare
+PartOf=perfetto.target
+
+[Service]
+Type=simple
+EnvironmentFile=/etc/perfetto/perfetto.env
+ExecStart=/usr/bin/env bash -lc '"$BIN_DIR/tracebox" websocket_bridge $WEBSOCKET_BRIDGE_OPTS'
+Restart=always
+RestartSec=1
+KillSignal=SIGTERM
+User=root
+KillMode=control-group
+
+[Install]
+WantedBy=perfetto.target
