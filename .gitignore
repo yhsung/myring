@@ -15,6 +15,16 @@ build/
 modules.order
 Module.symvers
 
+# Kernel image files
+vmlinux
+vmlinuz
+bzImage
+zImage
+Image
+System.map
+.config
+.config.old
+
 # Editor and IDE files
 .vscode/
 .idea/

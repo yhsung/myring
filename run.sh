@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # QEMU ARM64 VM launcher for myring kernel module development
-# 
+#
 # This script launches a Debian ARM64 virtual machine with:
 # - High performance configuration (8 cores, 12GB RAM)
 # - Bridged networking for direct network access
@@ -46,11 +46,20 @@ exec $QEMU \
     -device virtio-blk-pci,drive=hd0,bootindex=1 \
     `# === Networking (Bridged Mode) ===` \
     -device virtio-net-pci,netdev=net0,mac=52:54:00:12:34:56 \
-    -netdev vmnet-bridged,id=net0,ifname=en1 \
+    -netdev vmnet-bridged,id=net0,ifname=en0 \
     `# === Shared Filesystem ===` \
     -virtfs local,path="${SHARE}",security_model=mapped-xattr,mount_tag=hostshare \
-    `# === Console ===` \
-    -nographic -serial mon:stdio
+    `# === Logging ===` \
+    -serial mon:stdio -nographic
+    #-serial tcp::5555,server,nowait
+    #-monitor none -nographic
+    #-S -s \
+    #-gdb tcp::1234
+    #-kernel Image \
+    #-append "root=UUID=2cd55bd5-9cb6-4fee-b811-bb0aedaacdc9 kgdboc=ttyAMA0,115200 kgdbwait nokaslr"
+    # === Debugging ===
+
+
 
 # =============================================================================
 # Alternative NAT networking configuration (commented out)
@@ -61,7 +70,7 @@ exec $QEMU \
 #
 # Port forwarding mapping:
 # - SSH:        localhost:2222 -> VM:22
-# - HTTP:       localhost:8080 -> VM:80  
+# - HTTP:       localhost:8080 -> VM:80
 # - PostgreSQL: localhost:5432 -> VM:5432
 # - MySQL:      localhost:3306 -> VM:3306
 # - Custom UDP: localhost:5555 -> VM:5555
