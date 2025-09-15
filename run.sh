@@ -29,6 +29,12 @@ VARS="${LAB}/edk2-vars.fd"             # UEFI variables storage
 [[ -f "${VARS}" ]] || { echo "UEFI vars not found: ${VARS}"; exit 1; }
 
 # =============================================================================
+# Network Configuration
+# =============================================================================
+IFACE=$(route -n get default | grep 'interface:' | awk '{print $2}')
+[[ -n "${IFACE}" ]] || { echo "Could not determine default network interface."; exit 1; }
+
+# =============================================================================
 # QEMU configuration
 # =============================================================================
 QEMU=/opt/homebrew/bin/qemu-system-aarch64
@@ -46,7 +52,7 @@ exec $QEMU \
     -device virtio-blk-pci,drive=hd0,bootindex=1 \
     `# === Networking (Bridged Mode) ===` \
     -device virtio-net-pci,netdev=net0,mac=52:54:00:12:34:56 \
-    -netdev vmnet-bridged,id=net0,ifname=en0 \
+    -netdev vmnet-bridged,id=net0,ifname=${IFACE} \
     `# === Shared Filesystem ===` \
     -virtfs local,path="${SHARE}",security_model=mapped-xattr,mount_tag=hostshare \
     `# === Logging ===` \
