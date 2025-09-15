@@ -31,7 +31,16 @@ VARS="${LAB}/edk2-vars.fd"             # UEFI variables storage
 # =============================================================================
 # Network Configuration
 # =============================================================================
-IFACE=$(route -n get default | grep 'interface:' | awk '{print $2}')
+OS=$(uname)
+if [[ "${OS}" == "Darwin" ]]; then
+    IFACE=$(route -n get default | grep 'interface:' | awk '{print $2}')
+elif [[ "${OS}" == "Linux" ]]; then
+    IFACE=$(ip route | grep default | awk '{print $5}')
+else
+    echo "Unsupported OS: ${OS}"
+    exit 1
+fi
+
 [[ -n "${IFACE}" ]] || { echo "Could not determine default network interface."; exit 1; }
 
 # =============================================================================
